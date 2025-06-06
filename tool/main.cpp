@@ -625,6 +625,7 @@ warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
 
     /* Convert clan scop to Pluto program */
     prog = osl_scop_to_pluto_prog(scop, context);
+    prog->bouInst = bouInst_from_file("input.txt", prog->nvar + 1);
 
     /* Backup irregular program portion in .scop. */
     osl_irregular_p irreg_ext = NULL;
@@ -761,6 +762,7 @@ warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
       fprintf(stderr, "[Pluto] Can't open .cloog file: '%s'\n", cloogFileName);
       free(cloogFileName);
       pluto_options_free(options);
+      bouInst_free(prog->bouInst);
       pluto_prog_free(prog);
       pluto_context_free(context);
       return 9;

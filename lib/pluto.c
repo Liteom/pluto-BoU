@@ -651,6 +651,124 @@ void cut_conservative(PlutoProg *prog, Graph *ddg) {
   }
 }
 
+BouInst *bouInst_alloc(unsigned nb_stmt, unsigned nb_dim){
+  BouInst *ret = malloc(sizeof(BouInst));
+    if (!ret) return NULL;
+
+    ret->nb_dim = nb_dim;
+    ret->nb_stmt = nb_stmt;
+    ret->data = malloc(nb_stmt * sizeof(int*));
+    if (!ret->data) {
+        free(ret);
+        return NULL;
+    }
+
+    for (size_t i = 0; i < nb_stmt; ++i) {
+        ret->data[i] = calloc(nb_dim, sizeof(int));
+        if (!ret->data[i]) {
+            // Clean up previous allocations
+            for (size_t j = 0; j < i; ++j)
+                free(ret->data[j]);
+            free(ret->data);
+            free(ret);
+            return NULL;
+        }
+    }
+
+    return ret;
+}
+
+#define MAX_LINE_LEN 256
+
+BouInst *bouInst_from_file(const char *filename, unsigned nb_dim){
+  FILE *fp = fopen(filename, "r");
+  if (!fp) {
+      perror("Error opening file");
+      return NULL;
+  }
+
+  char line[MAX_LINE_LEN];
+  unsigned nb_stmt = 0;
+
+  // First pass: count how many entries (labels)
+  while (fgets(line, sizeof(line), fp)) {
+      if (line[0] != '\n') {
+          ++nb_stmt;
+          fgets(line, sizeof(line), fp); // skip the values line
+      }
+  }
+
+  rewind(fp); // reset file pointer
+
+  BouInst *list = bouInst_alloc(nb_stmt, nb_dim);
+  if (!list) {
+      fclose(fp);
+      return NULL;
+  }
+
+  unsigned index = 0;
+  while (fgets(line, sizeof(line), fp) && index < nb_stmt) {
+      // Line 1: label — ignore or parse if needed
+      // printf("Label: %s", line); // Optional
+
+      // Line 2: values
+      if (!fgets(line, sizeof(line), fp)) break;
+
+      int value;
+      char *token = strtok(line, " \t\n");
+      unsigned inner_index = 0;
+
+      while (token && inner_index < nb_dim) {
+          if (sscanf(token, "%d", &value) == 1) {
+              list->data[index][inner_index++] = value;
+          }
+          token = strtok(NULL, " \t\n");
+      }
+
+      ++index;
+  }
+
+  fclose(fp);
+  return list;
+}
+
+void bouInst_print(FILE *fp, const BouInst *list) {
+  if (!list) return;
+  for (size_t i = 0; i < list->nb_stmt; ++i) {
+      printf("S%zu\n", i + 1);
+      for (size_t j = 0; j < list->nb_dim; ++j) {
+          printf("%d", list->data[i][j]);
+          if (j < list->nb_dim - 1) {
+              printf(" ");
+          }
+      }
+      printf("\n");
+  }
+}
+
+unsigned bouInst_count_statement_fixed(BouInst *to_count, int stmt_index){
+  assert(stmt_index < to_count->nb_stmt);
+  unsigned count = 0;
+  for(unsigned i = 0; i < to_count->nb_dim; ++i){
+    if(to_count->data[stmt_index][i] > 0){
+      count++;
+    }
+  }
+  return count;
+}
+
+void bouInst_free(BouInst *to_delete){
+  if(!to_delete){
+    return;
+  }
+  for(unsigned i = 0; i < to_delete->nb_stmt; ++i){
+    free(to_delete->data[i]);
+  }
+  free(to_delete->data);
+  free(to_delete);
+  return;
+}
+
 /*
  * Determine constraints to ensure linear independence of hyperplanes
  *
@@ -666,34 +784,61 @@ PlutoConstraints *get_linear_ind_constraints(const PlutoProg *prog,
                                              bool lin_ind_mode) {
   int npar, nvar, nstmts, i, j, k, orthosum;
   int orthonum[prog->nstmts];
-  PlutoConstraints ***orthcst;
+  PlutoConstraints ***orthcst , **nullcst;
   Stmt **stmts;
   PlutoContext *context = prog->context;
-
+  
   IF_DEBUG(printf("[pluto] get_linear_ind_constraints\n"););
-
+  
   npar = prog->npar;
   nvar = prog->nvar;
   nstmts = prog->nstmts;
   stmts = prog->stmts;
-
+  
   orthcst = (PlutoConstraints ***)malloc(nstmts * sizeof(PlutoConstraints **));
-
+  nullcst = (PlutoConstraints **)malloc(nstmts * sizeof(PlutoConstraints *));
+  
   orthosum = 0;
+  int ncols = CST_WIDTH;
 
   /* Get orthogonality constraints for each statement */
   for (j = 0; j < nstmts; j++) {
     orthcst[j] =
         get_stmt_lin_ind_constraints(stmts[j], prog, cst, &orthonum[j]);
+    // printf("%d Hyperplanes for statement %d\n", pluto_stmt_get_num_ind_hyps(prog->stmts[j]), j+1);
+    // printf("%d Max depth for statement %d\n", prog->stmts[j]->dim_orig, j);
     orthosum += orthonum[j];
+    int remaining_dims = prog->stmts[j]->dim_orig - pluto_stmt_get_num_ind_hyps(prog->stmts[j]);
+    int forced_dims = bouInst_count_statement_fixed(prog->bouInst, j);
+    printf("Statement %d, %d remaining, %d forced\n", j+1, remaining_dims, forced_dims);
+    if (remaining_dims > forced_dims){
+      // Overconstrain
+      PlutoConstraints *overCons = pluto_constraints_alloc(1, ncols, context);
+      overCons->is_eq[0] = 1;
+      overCons->nrows = 1;
+      unsigned curIdx = npar + 1 + j*(nvar + 1);
+      int boundValue = 0;
+      for(unsigned i = 0; i < nvar + 1; ++i){
+        if(prog->bouInst->data[j][i] > 0){
+          overCons->val[0][curIdx+i] = 1;
+          boundValue = 1;
+        }
+      }
+      // pluto_constraints_print(stdout, overCons);
+      if(boundValue){
+        nullcst[j] = overCons;
+      } else {
+        nullcst[j] = NULL;
+      }
+    } else {
+      nullcst[j] = NULL;
+    }
   }
-
-  int ncols = CST_WIDTH;
   if (prog->context->options->per_cc_obj) {
     ncols += (npar + 1) * prog->ddg->num_ccs;
   }
   PlutoConstraints *indcst = pluto_constraints_alloc(1, ncols, context);
-
+  
   if (orthosum >= 1) {
     if (lin_ind_mode == EAGER) {
       /* Look for linearly independent hyperplanes for all stmts */
@@ -729,6 +874,22 @@ PlutoConstraints *get_linear_ind_constraints(const PlutoProg *prog,
   }
   free(orthcst);
 
+  printf("Total const is:\n");
+  pluto_constraints_print(stdout, indcst);
+
+  for(j = 0; j < nstmts; j++){
+    if(nullcst[j]){
+      indcst = pluto_constraints_add(indcst, nullcst[j]);
+    }
+  }
+
+  for (j = 0; j < nstmts; j++) {
+    pluto_constraints_free(nullcst[j]);
+  }
+  free(nullcst);
+
+  printf("Total const is:\n");
+  pluto_constraints_print(stdout, indcst);
   return indcst;
 }
 
@@ -812,6 +973,7 @@ int find_permutable_hyperplanes(PlutoProg *prog, bool hyp_search_mode,
     // print_polylib_visual_sets("ind", indcst);
     IF_DEBUG2(printf("linear independence constraints\n"));
     IF_DEBUG2(pluto_constraints_pretty_print(stdout, indcst););
+    IF_DEBUG2(pluto_constraints_print_polylib(stdout, indcst););
 
     if (indcst->nrows == 0) {
       /* If you don't have any independence constraints, we would end

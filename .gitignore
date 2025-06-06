@@ -8,6 +8,7 @@
 test_plutolib
 test.sh
 
+debug.txt
 test/*.cloog
 test/*.pluto.c
 test/*.opt.c

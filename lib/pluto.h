@@ -326,6 +326,12 @@ struct hyperplane_properties {
 };
 typedef struct hyperplane_properties HyperplaneProperties;
 
+typedef struct bouInst {
+  int **data;
+  unsigned nb_stmt;
+  unsigned nb_dim;
+} BouInst;
+
 struct plutoProg {
   /* Array of statements */
   Stmt **stmts;
@@ -418,6 +424,8 @@ struct plutoProg {
   long int num_lp_calls;
 
   PlutoContext *context;
+
+  BouInst *bouInst;
 };
 typedef struct plutoProg PlutoProg;
 
@@ -485,6 +493,15 @@ typedef struct band {
   /* Not used yet */
   struct band **children;
 } Band;
+
+//////////
+
+BouInst *bouInst_alloc(unsigned nb_stmt, unsigned nb_dim);
+BouInst *bouInst_from_file(const char *filename, unsigned nb_dim);
+void bouInst_print(FILE *fp, const BouInst *list);
+void bouInst_free(BouInst *to_delete);
+
+//////////
 
 void dep_alloc_members(Dep *);
 void dep_free(Dep *);
